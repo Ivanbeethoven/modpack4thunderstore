@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fs, io::Read, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fs, io::Read, rc::Rc};
 use serde;
 
 #[derive(Clone, PartialEq)]
@@ -33,10 +33,10 @@ fn read_utf8_with_bom(file_path: &str) -> std::io::Result<String> {
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
 
-    // 使用 encoding_rs 处理 BOM
-    let (cow ,encoding, had_errors) =encoding_rs::UTF_8.decode(&buf);
+    // Use encoding_rs to handle BOM
+    let (cow ,encoding, had_errors) = encoding_rs::UTF_8.decode(&buf);
 
-    // 获取去除 BOM 后的有效数据
+    // Get the valid data after removing BOM
     let content = String::from(cow).to_string();
     Ok(content)
 }
@@ -44,11 +44,13 @@ fn read_utf8_with_bom(file_path: &str) -> std::io::Result<String> {
 fn main() {
      
     let mod_path = String::from("C:\\Users\\HXY\\AppData\\Roaming\\r2modmanPlus-local\\LethalCompany\\profiles\\Default\\BepInEx\\plugins");
+    // let user_name = std::env::var("USERNAME").unwrap_or_else(|_| "User".to_string());
+    // let default_param = "Default"; // Replace with your parameter as needed
+    // let mod_path = format!("C:\\Users\\{}\\AppData\\Roaming\\r2modmanPlus-local\\LethalCompany\\profiles\\{}\\BepInEx\\plugins", user_name, default_param);
     //std::io::stdin().read_line(&mut mod_path).expect("Failed to read line");
     let paths = fs::read_dir(mod_path.trim()).expect("Failed to read directory");
     let mut modlist: Vec<Manifest> = vec![];
     for path in paths {
-        println!("{}",1);
         let dir = path.expect("Failed to get path").path();
         if !dir.is_dir() {
             continue;
@@ -57,50 +59,56 @@ fn main() {
         let manifest_path = dir.join("manifest.json");
         if manifest_path.exists() {
             let manifest_content = read_utf8_with_bom(manifest_path.to_str().expect("Failed to convert path to string")).expect("Failed to read manifest.json");
-            let manifest: Manifest = serde_json::from_str(&manifest_content).unwrap_or_else(|e| {
+            let mut manifest: Manifest = serde_json::from_str(&manifest_content).unwrap_or_else(|e| {
                 eprintln!("parse- error: {}", e);
                 eprintln!("context: {}", manifest_content);
                 panic!("Failed to parse manifest.json");
             });
+            let author_modname = dir.file_name().unwrap();
+            let author_modname_str = author_modname.to_string_lossy(); // Convert file name to string
+            let parts: Vec<&str> = author_modname_str.split('-').collect(); // Split by "-" into two strings
+            if parts.len() < 2 {
+                continue;
+            }
+            manifest.author = Some(parts[0].to_string());
+            manifest.name = parts[1].to_string();
+            //println!("{:?}", manifest);
             modlist.push(manifest);
+        }   
+       
+    }
+
+    let mut modmap: HashMap<String, bool> = HashMap::new();
+    for modifest in &modlist {
+        if let Some(a) = modmap.get_mut(&modifest.name) {
+            // Already depended on.
+        } else {
+            modmap.insert(modifest.name.clone(), false);
+        }
+
+        for modifest_dep in &modifest.dependencies {
+            let parts: Vec<&str> = modifest_dep.split('-').collect();
+            modmap.insert(parts[1].to_owned(), true);
+        }
+        // modmap.insert(modifest., v)
+    }
+    let mut dep_list = vec![];
+    for m in &modlist {
+        if !*modmap.get(&m.name).unwrap() {
+            dep_list.push(format!("{}-{}-{}", m.author.clone().unwrap(), m.name, m.version_number));
         }
     }
-    // 我现在有一个modlist: Vec<Manifest> ，其中Manifest中的dependencies 的依赖格式是 “{author}-{name}-{version}”
-    // 通过这种格式指向其他若干个(0或n个)其他Manifest。
-    // 你需要构建一个依赖图。同时找出一个最小化的集合（可以是plugins列表形式），其中每个plugins都不被其他依赖。
-    let mut dependency_map= std::collections::HashMap::new();
-    let mut plugins_list = Vec::new();
+    let modpack = serde_json::json!({
+        "name": "Modpackhxy",
+        "version_number": "1.2.0",
+        "website_url": "https://gitee.com/hanxiaoyang1/lc_modpack",
+        "description": "sksb",
+        "dependencies": dep_list,
+    });
 
-    for manifest in modlist {
-        let plugin = Rc::new(RefCell::new(Plugins::from(manifest.clone()))); // Wrap in RefCell
-        plugins_list.push(plugin.clone());
-        let pb =plugin.borrow();
-        let key_format = format!("{}-{}-{}", 
-                    if pb.author.is_empty() { "" } else { &pb.author },
-                    if pb.name.is_empty() { "" } else { &pb.name },
-                    if pb.version.is_empty() { "" } else { &pb.version }
-                ); 
-        drop(pb);
-        let key = key_format.trim_matches('-'); // Remove trailing underscores if any
-        dependency_map.insert(key.to_string(), plugin);
-    }
-
-
-
-    let independent_plugins = plugins_list.iter()
-        .filter(|p| {
-            let plugin_borrowed = p.borrow();
-            !plugins_list.iter().any(|other| {
-                let other_borrowed = other.borrow();
-                other_borrowed.dependency.iter().any(|dep| Rc::ptr_eq(dep, p))
-            })
-        }).collect::<Vec<_>>();
-
-    // Output the independent plugins
-    for plugin in independent_plugins {
-        let bp = plugin.borrow();
-        println!("Independent Plugin: {} by {}", bp.name, bp.author);
-    }
-
+    // Print the generated modpack JSON
+    //println!("{}", serde_json::to_string_pretty(&modpack).unwrap());
+    let output_path = "./test.json"; // Specify your desired output path
+    let json_content = serde_json::to_string_pretty(&modpack).expect("Failed to serialize modpack to JSON");
+    fs::write(output_path, json_content).expect("Failed to write JSON to file");
 }
-
